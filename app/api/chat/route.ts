@@ -1,12 +1,10 @@
-import Anthropic from "@anthropic-ai/sdk";
+import { GoogleGenAI, ApiError } from "@google/genai";
 import { NextRequest, NextResponse } from "next/server";
 
-const client = new Anthropic();
-
-// Limites de custo. Ver README > Custos.
-const MODEL = "claude-haiku-4-5";
-const MAX_TOKENS = 800;
-const MAX_HISTORY = 6; // a API é stateless: todo o histórico é reenviado (e cobrado) a cada turno
+// Limites de custo e abuso. Ver README > Custos e limites.
+const MODEL = "gemini-2.0-flash";
+const MAX_OUTPUT_TOKENS = 800;
+const MAX_HISTORY = 6; // a API é stateless: todo o histórico é reenviado a cada turno
 const MAX_INPUT_CHARS = 1000;
 
 const SYSTEM_PROMPT = `Você é um assistente educacional especialista em Regressão Linear,
@@ -25,7 +23,8 @@ Regras:
 - Use linguagem didática, nível universitário.
 - Responda em português brasileiro.
 - Seja conciso mas completo.
-- Use fórmulas quando relevante (formato texto simples, ex: Y = β₀ + β₁X).`;
+- Use fórmulas quando relevante (formato texto simples, ex: Y = β₀ + β₁X).
+- Não use Markdown: o chat renderiza texto puro.`;
 
 interface ChatMessage {
   role: "user" | "assistant";
@@ -60,7 +59,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Sem isso, qualquer visitante pode colar um texto gigante e gerar custo de tokens.
+    // Sem isso, qualquer visitante pode colar um texto gigante e queimar a cota.
     if (last.content.length > MAX_INPUT_CHARS) {
       return NextResponse.json(
         { error: `Pergunta muito longa (limite: ${MAX_INPUT_CHARS} caracteres).` },
@@ -68,17 +67,51 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const response = await client.messages.create({
+    // A SDK do Google não lê process.env sozinha (diferente da Anthropic), então
+    // a chave vai explícita. A checagem fica aqui, depois da validação: rejeitar
+    // um request malformado não depende de haver chave configurada.
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey || apiKey === "your_api_key_here") {
+      console.error("[/api/chat] GEMINI_API_KEY ausente ou com valor placeholder.");
+      return NextResponse.json(
+        { error: "Chave de API não configurada no servidor." },
+        { status: 500 },
+      );
+    }
+
+    const ai = new GoogleGenAI({ apiKey });
+
+    // Cortar o histórico pode deixar um "assistant" na primeira posição; como a
+    // conversa precisa abrir com o usuário, descartamos o que sobrar na frente.
+    const history = messages.slice(-MAX_HISTORY);
+    while (history.length > 0 && history[0].role !== "user") history.shift();
+
+    const response = await ai.models.generateContent({
       model: MODEL,
-      max_tokens: MAX_TOKENS,
-      system: SYSTEM_PROMPT,
-      messages: messages.slice(-MAX_HISTORY),
+      // O Gemini chama a resposta do modelo de "model", não de "assistant".
+      contents: history.map((m) => ({
+        role: m.role === "assistant" ? "model" : "user",
+        parts: [{ text: m.content }],
+      })),
+      config: {
+        systemInstruction: SYSTEM_PROMPT,
+        maxOutputTokens: MAX_OUTPUT_TOKENS,
+      },
     });
 
-    const text = response.content
-      .filter((block) => block.type === "text")
-      .map((block) => block.text)
-      .join("");
+    // response.text é um getter e pode vir undefined — resposta bloqueada por
+    // filtro de segurança ou cortada pelo limite de tokens antes de gerar texto.
+    const text = response.text;
+    if (!text) {
+      console.error(
+        "[/api/chat] Resposta sem texto.",
+        JSON.stringify(response.candidates?.[0]?.finishReason),
+      );
+      return NextResponse.json(
+        { error: "Não consegui gerar uma resposta para essa pergunta. Tente reformulá-la." },
+        { status: 502 },
+      );
+    }
 
     return NextResponse.json({ response: text });
   } catch (error) {
@@ -86,24 +119,25 @@ export async function POST(req: NextRequest) {
     // mensagem genérica na resposta.
     console.error("[/api/chat]", error);
 
-    if (error instanceof Anthropic.RateLimitError) {
-      return NextResponse.json(
-        { error: "Muitas perguntas ao mesmo tempo. Aguarde alguns segundos e tente de novo." },
-        { status: 429 },
-      );
-    }
-    if (error instanceof Anthropic.AuthenticationError) {
-      return NextResponse.json(
-        { error: "Chave de API inválida ou ausente no servidor." },
-        { status: 500 },
-      );
-    }
-    if (error instanceof Anthropic.APIError) {
+    if (error instanceof ApiError) {
+      if (error.status === 429) {
+        return NextResponse.json(
+          { error: "Limite de uso atingido. Aguarde um instante e tente de novo." },
+          { status: 429 },
+        );
+      }
+      if (error.status === 400 || error.status === 401 || error.status === 403) {
+        return NextResponse.json(
+          { error: "Chave de API inválida ou sem permissão." },
+          { status: 500 },
+        );
+      }
       return NextResponse.json(
         { error: "O serviço de IA está indisponível no momento. Tente novamente em instantes." },
         { status: 502 },
       );
     }
+
     return NextResponse.json({ error: "Erro inesperado ao processar a pergunta." }, { status: 500 });
   }
 }

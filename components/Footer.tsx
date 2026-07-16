@@ -25,7 +25,7 @@ export function Footer() {
             </a>
             .
           </p>
-          <p className="mt-1">Chatbot construído com a API da Anthropic (Claude).</p>
+          <p className="mt-1">Chatbot construído com a API do Google Gemini.</p>
         </div>
       </div>
     </footer>
