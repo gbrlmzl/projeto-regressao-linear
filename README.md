@@ -53,7 +53,7 @@ cobrança. Os limites do chatbot existem para não estourar a cota:
 
 | Camada | Onde | Valor atual |
 |---|---|---|
-| Modelo | `app/api/chat/route.ts` → `MODEL` | `gemini-2.0-flash` |
+| Modelo | `app/api/chat/route.ts` → `MODEL` | `gemini-3.1-flash-lite` |
 | Teto por resposta | `route.ts` → `MAX_OUTPUT_TOKENS` | 800 |
 | Histórico enviado | `route.ts` → `MAX_HISTORY` | últimas 6 mensagens |
 | Tamanho da pergunta | `route.ts` → `MAX_INPUT_CHARS` | 1000 caracteres |
@@ -153,6 +153,37 @@ Vale experimentar adicionar um outlier: um único ponto extremo derruba o R² de
 > largura do eixo Y (60px) e a altura do eixo X (30px) *por dentro* da margem, então
 > `svg - margens` dá a área errada. O `onClick` do Recharts também não serve aqui: na v3 ele
 > entrega `activeIndex`/`activeCoordinate`, não o pixel do clique.
+
+---
+
+## Escolha do modelo
+
+`MODEL` é `gemini-3.1-flash-lite`. Se for trocar, duas armadilhas — ambas já custaram tempo
+neste projeto, e nenhuma aparece em `models.list()`:
+
+**1. Nem todo modelo listado está no free tier.** `gemini-2.0-flash` e `gemini-2.0-flash-lite`
+respondem `429` com `limit: 0` — cota gratuita zero, apesar de aparecerem na listagem. Repare
+que `limit: 0` significa "sem direito", não "cota esgotada"; a mensagem do Google fala em
+billing e induz ao erro. Não é problema de conta nem de cartão: é o modelo.
+
+**2. Modelos com raciocínio interno estouram o `MAX_OUTPUT_TOKENS`.** O `gemini-flash-latest`,
+medido aqui, gastou **628 tokens pensando** e só 168 escrevendo — total 796, batendo no teto de
+800 e cortando a resposta no meio da palavra (`finishReason: MAX_TOKENS`). Se usar um modelo
+assim, suba `MAX_OUTPUT_TOKENS` bem acima de 800 ou desligue o raciocínio via
+`config.thinkingConfig`.
+
+Modelos verificados nesta conta (fev/2026):
+
+| Modelo | Resultado |
+|---|---|
+| `gemini-3.1-flash-lite` | ✅ ~2s, resposta completa (`STOP`), sem tokens de raciocínio |
+| `gemini-flash-latest` | ⚠️ funciona, mas trunca em 800 tokens; já deu `503` por alta demanda |
+| `gemini-flash-lite-latest` | ✅ funciona |
+| `gemini-2.0-flash` / `-flash-lite` | ❌ `429 limit: 0` (fora do free tier) |
+| `gemini-2.5-flash` / `-lite` | ❌ `404` |
+
+Aliases `-latest` são alvos móveis: o Google pode reapontá-los sem aviso. Por isso o padrão é
+uma versão fixa.
 
 ---
 

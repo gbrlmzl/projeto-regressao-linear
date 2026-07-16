@@ -1,8 +1,17 @@
 import { GoogleGenAI, ApiError } from "@google/genai";
 import { NextRequest, NextResponse } from "next/server";
 
-// Limites de custo e abuso. Ver README > Custos e limites.
-const MODEL = "gemini-2.0-flash";
+// Limites de cota e abuso. Ver README > Custos e limites.
+//
+// Ao trocar de modelo, confira duas coisas (as duas já morderam este projeto):
+//   1. Free tier: `gemini-2.0-flash` e `-flash-lite` respondem 429 com "limit: 0"
+//      — estão fora da cota gratuita, apesar de aparecerem em models.list().
+//   2. Raciocínio interno: modelos com "thinking" (ex.: gemini-flash-latest)
+//      gastam MAX_OUTPUT_TOKENS pensando antes de escrever. Medido aqui: 628
+//      tokens de raciocínio + 168 de texto = resposta cortada no meio da frase,
+//      com finishReason MAX_TOKENS. Se usar um deles, suba MAX_OUTPUT_TOKENS
+//      bem acima de 800 ou desligue via config.thinkingConfig.
+const MODEL = "gemini-3.1-flash-lite";
 const MAX_OUTPUT_TOKENS = 800;
 const MAX_HISTORY = 6; // a API é stateless: todo o histórico é reenviado a cada turno
 const MAX_INPUT_CHARS = 1000;
