@@ -6,7 +6,7 @@ com chatbot integrado que responde dúvidas sobre o tema.
 Projeto acadêmico da disciplina de **Sistemas de Apoio à Gestão**.
 
 **Stack:** Next.js 16 (App Router) · TypeScript · Tailwind CSS · shadcn/ui · Recharts
-**Chatbot:** API da Anthropic (Claude) via Route Handler
+**Chatbot:** API do Google Gemini via Route Handler
 **Deploy:** Vercel
 
 ---
@@ -27,42 +27,50 @@ O site inteiro funciona sem chave de API — só o chatbot precisa dela.
 
 ## Configurando a chave da API
 
-A API da Anthropic é **cobrada em créditos separados** e não tem relação com uma assinatura
-Claude Pro/Max — usar esta API não consome nada da sua assinatura.
+O Gemini tem **free tier permanente** — chave gratuita, sem cartão de crédito.
 
-1. Acesse [console.anthropic.com](https://console.anthropic.com).
-2. **Recomendado:** em *Settings → Workspaces*, crie um workspace para o projeto e defina um
-   **spend limit** (ex.: US$ 5). Assim o gasto fica isolado e limitado.
-3. Em *API Keys*, crie uma chave **dentro desse workspace**.
-4. Cole em `.env.local`:
+1. Acesse [aistudio.google.com/apikey](https://aistudio.google.com/apikey) e faça login com
+   uma conta Google.
+2. Clique em **Create API key** e copie o valor.
+3. Cole em `.env.local`:
 
 ```env
-ANTHROPIC_API_KEY=sk-ant-...
+GEMINI_API_KEY=AIza...
 ```
+
+4. **Reinicie o `npm run dev`.** O Next lê variáveis de ambiente só no boot — salvar o arquivo
+   com o servidor rodando não tem efeito, e o chat continua acusando chave ausente.
 
 `.env.local` está no `.gitignore` e **nunca** deve ser commitado. A chave é lida apenas no
 servidor (`app/api/chat/route.ts`), então nunca chega ao browser.
 
 ---
 
-## Custos
+## Custos e limites
 
-O chatbot tem várias camadas de controle de gasto, da mais grossa para a mais fina:
+O Gemini é gratuito no free tier, mas ele tem **cota** (requisições por minuto e por dia), não
+cobrança. Os limites do chatbot existem para não estourar a cota:
 
 | Camada | Onde | Valor atual |
 |---|---|---|
-| Spend limit | Console (Workspace) | definido por você |
-| Modelo | `app/api/chat/route.ts` → `MODEL` | `claude-haiku-4-5` (o mais barato) |
-| Teto por resposta | `route.ts` → `MAX_TOKENS` | 800 |
+| Modelo | `app/api/chat/route.ts` → `MODEL` | `gemini-3.1-flash-lite` |
+| Teto por resposta | `route.ts` → `MAX_OUTPUT_TOKENS` | 800 |
 | Histórico enviado | `route.ts` → `MAX_HISTORY` | últimas 6 mensagens |
 | Tamanho da pergunta | `route.ts` → `MAX_INPUT_CHARS` | 1000 caracteres |
 
 O `MAX_HISTORY` é o que a maioria dos projetos esquece: a API é *stateless*, então todo o
-histórico é reenviado — e cobrado — a cada mensagem. Sem o corte, uma conversa de 20 turnos
-paga o histórico 20 vezes.
+histórico é reenviado a cada mensagem. Sem o corte, uma conversa longa consome cota
+desproporcional.
 
 O `MAX_INPUT_CHARS` existe porque o site é público: sem ele, qualquer visitante pode colar um
-texto gigante e gerar custo de tokens na sua conta.
+texto gigante e queimar sua cota.
+
+Cota estourada retorna HTTP 429, e o chat mostra *"Limite de uso atingido"* em vez de quebrar.
+Os limites atuais do free tier estão em [ai.google.dev/pricing](https://ai.google.dev/pricing).
+
+> **Privacidade:** no free tier, o Google pode usar o conteúdo das conversas para melhorar os
+> produtos deles. Para um bot que só explica regressão linear num site público isso é
+> irrelevante, mas é uma diferença real em relação ao tier pago.
 
 ---
 
@@ -70,9 +78,10 @@ texto gigante e gerar custo de tokens na sua conta.
 
 1. `git push` para o GitHub.
 2. Importe o repositório em [vercel.com/new](https://vercel.com/new).
-3. Em *Settings → Environment Variables*, adicione `ANTHROPIC_API_KEY` (marque Production,
+3. Em *Settings → Environment Variables*, adicione `GEMINI_API_KEY` (marque Production,
    Preview e Development).
-4. Deploy.
+4. Deploy. Se você adicionar a variável **depois** de um deploy já feito, precisa redeployar
+   para ela entrar em vigor.
 
 A rota `/api/chat` é renderizada sob demanda no servidor; o resto da página é estático.
 
@@ -85,7 +94,7 @@ app/
 ├── layout.tsx            # fontes (Inter / JetBrains Mono), metadata
 ├── page.tsx              # as 12 seções da SPA
 ├── globals.css
-└── api/chat/route.ts     # proxy da API do Claude + validação e limites
+└── api/chat/route.ts     # proxy da API do Gemini + validação e limites
 components/
 ├── Navbar.tsx            # navbar fixa, scroll suave, seção ativa, hamburger no mobile
 ├── HeroSection.tsx
@@ -144,6 +153,54 @@ Vale experimentar adicionar um outlier: um único ponto extremo derruba o R² de
 > largura do eixo Y (60px) e a altura do eixo X (30px) *por dentro* da margem, então
 > `svg - margens` dá a área errada. O `onClick` do Recharts também não serve aqui: na v3 ele
 > entrega `activeIndex`/`activeCoordinate`, não o pixel do clique.
+
+---
+
+## Escolha do modelo
+
+`MODEL` é `gemini-3.1-flash-lite`. Se for trocar, duas armadilhas — ambas já custaram tempo
+neste projeto, e nenhuma aparece em `models.list()`:
+
+**1. Nem todo modelo listado está no free tier.** `gemini-2.0-flash` e `gemini-2.0-flash-lite`
+respondem `429` com `limit: 0` — cota gratuita zero, apesar de aparecerem na listagem. Repare
+que `limit: 0` significa "sem direito", não "cota esgotada"; a mensagem do Google fala em
+billing e induz ao erro. Não é problema de conta nem de cartão: é o modelo.
+
+**2. Modelos com raciocínio interno estouram o `MAX_OUTPUT_TOKENS`.** O `gemini-flash-latest`,
+medido aqui, gastou **628 tokens pensando** e só 168 escrevendo — total 796, batendo no teto de
+800 e cortando a resposta no meio da palavra (`finishReason: MAX_TOKENS`). Se usar um modelo
+assim, suba `MAX_OUTPUT_TOKENS` bem acima de 800 ou desligue o raciocínio via
+`config.thinkingConfig`.
+
+Modelos verificados nesta conta (fev/2026):
+
+| Modelo | Resultado |
+|---|---|
+| `gemini-3.1-flash-lite` | ✅ ~2s, resposta completa (`STOP`), sem tokens de raciocínio |
+| `gemini-flash-latest` | ⚠️ funciona, mas trunca em 800 tokens; já deu `503` por alta demanda |
+| `gemini-flash-lite-latest` | ✅ funciona |
+| `gemini-2.0-flash` / `-flash-lite` | ❌ `429 limit: 0` (fora do free tier) |
+| `gemini-2.5-flash` / `-lite` | ❌ `404` |
+
+Aliases `-latest` são alvos móveis: o Google pode reapontá-los sem aviso. Por isso o padrão é
+uma versão fixa.
+
+---
+
+## Notas sobre a SDK do Gemini
+
+Três detalhes de `@google/genai` que não são óbvios e que já estão tratados em `route.ts`:
+
+- **`role` é `'model'`, não `'assistant'`.** O front envia `assistant` (convenção do próprio
+  app); o `route.ts` traduz antes de mandar. Sem isso a API rejeita.
+- **A SDK não lê `process.env`.** Diferente da Anthropic (onde `new Anthropic()` acha a chave
+  sozinho), aqui é obrigatório `new GoogleGenAI({ apiKey })` explícito.
+- **`response.text` é um getter e pode ser `undefined`** — resposta bloqueada por filtro de
+  segurança ou cortada pelo limite de tokens. Tratado como 502 com mensagem amigável.
+
+Há também um cuidado com o corte de histórico: `slice(-6)` pode deixar uma mensagem do modelo
+na primeira posição, e a conversa precisa abrir com o usuário. O `route.ts` descarta o que
+sobrar na frente.
 
 ---
 
